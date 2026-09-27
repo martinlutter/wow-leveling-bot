@@ -14,6 +14,7 @@ const mockGetUserCharacters = getUserCharacters as jest.MockedFunction<
 function createInteraction(
   typed: string,
   inServer = true,
+  userOption?: string,
 ): APIApplicationCommandAutocompleteInteraction {
   const user = { id: 'user1', username: 'thrall_fan' };
   return {
@@ -21,6 +22,15 @@ function createInteraction(
       name: 'level',
       options: [
         { name: 'level', type: ApplicationCommandOptionType.Integer, value: 5 },
+        ...(userOption
+          ? [
+              {
+                name: 'user',
+                type: ApplicationCommandOptionType.User,
+                value: userOption,
+              },
+            ]
+          : []),
         {
           name: 'character',
           type: ApplicationCommandOptionType.String,
@@ -71,6 +81,12 @@ describe('autocompleteCharacters', () => {
     await autocompleteCharacters(createInteraction('', false));
 
     expect(mockGetUserCharacters).toHaveBeenCalledWith('user1');
+  });
+
+  it('suggests the characters of the user in the user option', async () => {
+    await autocompleteCharacters(createInteraction('', true, 'user2'));
+
+    expect(mockGetUserCharacters).toHaveBeenCalledWith('user2');
   });
 
   it('suggests at most 25 characters', async () => {

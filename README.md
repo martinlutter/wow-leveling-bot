@@ -37,17 +37,23 @@ A third lambda posts the daily report. EventBridge Scheduler triggers it every d
   - Without `character` and with no characters yet, one is created named after you (server nickname, then display name,
     then username).
   - Levels can't go down. Recording the same level again refreshes "last updated".
+- `/progress [user] [character]`: show a player's progress, yours by default. Posts publicly. For each character (or
+  just `character`): current level, first record and levels gained since, pace and ETA to 60, and when it was last
+  updated. `character` autocompletes the characters of `user`, or yours.
+  - Pace is levels per day from the first record to the latest one. It needs records at least a day apart.
+  - The ETA assumes a steady pace, so it's optimistic: late levels take longer.
 - `/remove-character <name>`: remove a character and its level history, after a Yes/No confirmation. `name`
   autocompletes your characters.
 - `/ping`: check that the bot is alive.
 
-Everything except a successful `/level` (errors, confirmations) is only visible to you.
+Everything except a successful `/level` or `/progress` (errors, confirmations) is only visible to you.
 
 ### Daily report
 
 Every day at 07:00 Central European time (following daylight saving time), the bot posts to the `REPORT_CHANNEL_ID`
 channel. It lists every character by level with its change over the last 24 hours (▲ gained, — none, 🆕 no record older
-than 24 hours) and when it was last updated.
+than 24 hours), its pace (once its records are a day apart) and when it was last updated. 💤 marks a character below 60
+without an update for more than 3 days.
 
 ## Project structure
 
@@ -60,6 +66,7 @@ src/dailyReport.ts         Daily report lambda
 src/clients/               Discord REST and DynamoDB clients
 src/commands/              one file per command
 src/db/                    data access (one function per access pattern) and models
+src/leveling.ts            pace, ETA and stale rules shared by /progress and the report
 src/quotes.ts              WoW quotes for /level replies
 tests/                     jest tests, mirrors src/
 .claude/                   Claude Code settings and skills
@@ -119,8 +126,8 @@ https://discord.com/oauth2/authorize?client_id=<APPLICATION_CLIENT_ID>&scope=bot
 - `bot` adds a bot user, which is needed for anything outside of replying to a command
   (posting to a channel on a schedule, reading messages, …).
 - `permissions` is a bitfield of what the bot user can do. `18432` is Send Messages (2048) + Embed Links (16384). The
-  daily report needs them in the `REPORT_CHANNEL_ID` channel, and public `/level` replies need Send Messages in every
-  channel `/level` is used in. For a private channel, also give the bot's role access to it. To choose others,
+  daily report needs them in the `REPORT_CHANNEL_ID` channel, and public `/level` and `/progress` replies need Send
+  Messages in every channel they're used in. For a private channel, also give the bot's role access to it. To choose others,
   use **OAuth2 → URL Generator** in the portal: tick `bot` + `applications.commands`, tick the permissions,
   and copy the generated URL.
 

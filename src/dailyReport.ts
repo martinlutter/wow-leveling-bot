@@ -2,16 +2,17 @@ import { time, TimestampStyles, userMention } from '@discordjs/builders';
 import { type APIEmbed } from 'discord-api-types/v10';
 import { discordApi } from './clients/discordApi';
 import getAllCharacters from './db/getAllCharacters';
+import getFirstRecord from './db/getFirstRecord';
 import getLevelAt from './db/getLevelAt';
 import { formatCharacterName } from './characterName';
 import { hasLevel, type LeveledCharacter } from './db/model/character';
+import { DAY_MS, formatPace, getPace, isStale } from './leveling';
 
 const reportChannelId = process.env.REPORT_CHANNEL_ID!;
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const EMBED_DESCRIPTION_LIMIT = 4096;
 
-// Stateless: the 24h change comes from the level history, so a retry posts the same report
+// Stateless: the 24h change and the pace come from the level history, so a retry posts the same report
 export const handler = async (): Promise<void> => {
   const embed = await buildReport(new Date());
   await discordApi.channels.createMessage(reportChannelId, {
@@ -32,10 +33,18 @@ async function buildReport(now: Date): Promise<APIEmbed> {
 
   const dayAgo = new Date(now.getTime() - DAY_MS);
   const rows = await Promise.all(
-    characters.map(async (character) => ({
-      character,
-      levelDayAgo: await getLevelAt(character, dayAgo),
-    })),
+    characters.map(async (character) => {
+      const [levelDayAgo, firstRecord] = await Promise.all([
+        getLevelAt(character, dayAgo),
+        getFirstRecord(character),
+      ]);
+      return {
+        character,
+        levelDayAgo,
+        pace: getPace(character, firstRecord),
+        stale: isStale(character, now),
+      };
+    }),
   );
   rows.sort(
     (a, b) =>
@@ -59,9 +68,13 @@ async function buildReport(now: Date): Promise<APIEmbed> {
 function formatRow({
   character,
   levelDayAgo,
+  pace,
+  stale,
 }: {
   character: LeveledCharacter;
   levelDayAgo: number | undefined;
+  pace: number | undefined;
+  stale: boolean;
 }): string {
   let change: string;
   if (levelDayAgo === undefined) {
@@ -72,8 +85,10 @@ function formatRow({
     change = '—';
   }
 
+  // Left out until there is one: "Lv 12 — · —" would be confusing
+  const paceText = pace === undefined ? '' : ` · ${formatPace(pace)}`;
   const updated = time(character.updatedAt, TimestampStyles.RelativeTime);
-  return `${formatCharacterName(character.name)} (${userMention(character.userId)}) Lv ${character.level} ${change} · updated ${updated}`;
+  return `${formatCharacterName(character.name)} (${userMention(character.userId)}) Lv ${character.level} ${change}${paceText} · updated ${updated}${stale ? ' 💤' : ''}`;
 }
 
 /** Drops rows from the end until the description fits in an embed. */

@@ -3,6 +3,7 @@ process.env.REPORT_CHANNEL_ID = 'channel1';
 import { type APIEmbed } from 'discord-api-types/v10';
 import { handler } from '../src/dailyReport';
 import getAllCharacters from '../src/db/getAllCharacters';
+import getFirstRecord from '../src/db/getFirstRecord';
 import getLevelAt from '../src/db/getLevelAt';
 import { type Character } from '../src/db/model/character';
 
@@ -16,10 +17,14 @@ jest.mock('../src/clients/discordApi', () => ({
   },
 }));
 jest.mock('../src/db/getAllCharacters');
+jest.mock('../src/db/getFirstRecord');
 jest.mock('../src/db/getLevelAt');
 
 const mockGetAllCharacters = getAllCharacters as jest.MockedFunction<
   typeof getAllCharacters
+>;
+const mockGetFirstRecord = getFirstRecord as jest.MockedFunction<
+  typeof getFirstRecord
 >;
 const mockGetLevelAt = getLevelAt as jest.MockedFunction<typeof getLevelAt>;
 
@@ -62,6 +67,7 @@ describe('daily report', () => {
     jest.clearAllMocks();
     jest.useFakeTimers({ now });
     mockCreateMessage.mockResolvedValue({});
+    mockGetFirstRecord.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -110,6 +116,38 @@ describe('daily report', () => {
 
     expect(embed.description).toMatch(
       /^\*No level-ups in the last 24 hours\.\*\n/,
+    );
+  });
+
+  it('shows the pace once there is one, and marks stale characters', async () => {
+    const staleSince = new Date('2026-09-23T20:00:00.000Z');
+    mockGetFirstRecord.mockImplementation((character) =>
+      Promise.resolve(
+        character.name === 'Thrall'
+          ? { level: 6, recordedAt: new Date('2026-09-22T20:00:00.000Z') }
+          : undefined,
+      ),
+    );
+
+    const embed = await runReport(
+      [
+        createCharacter('u1', 'Thrall', 12),
+        { userId: 'u2', name: 'Jaina', level: 30, updatedAt: staleSince },
+        { userId: 'u3', name: 'Anduin', level: 60, updatedAt: staleSince },
+      ],
+      { Thrall: 12, Jaina: 30, Anduin: 60 },
+    );
+
+    expect(mockGetFirstRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Thrall' }),
+    );
+    expect(embed.description).toBe(
+      [
+        '*No level-ups in the last 24 hours.*',
+        '**Anduin** (<@u3>) Lv 60 — · updated <t:1790193600:R>',
+        '**Jaina** (<@u2>) Lv 30 — · updated <t:1790193600:R> 💤',
+        `**Thrall** (<@u1>) Lv 12 — · 1.5/day · updated ${updated}`,
+      ].join('\n'),
     );
   });
 

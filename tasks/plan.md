@@ -9,8 +9,8 @@ The current phase's checklist is in [todo.md](todo.md).
 
 | Phase | Scope                                                                    | Status              |
 | ----- | ------------------------------------------------------------------------ | ------------------- |
-| 1     | Storage, `/level` command, daily report (level, 24h change, last update) | Built, not deployed |
-| 2     | Leveling pace (levels/day), stale markers, `/progress` command           | Later               |
+| 1     | Storage, `/level` command, daily report (level, 24h change, last update) | Deployed            |
+| 2     | Leveling pace (levels/day), stale markers, `/progress` command           | Built, not deployed |
 | 3     | `/leaderboard`, `/compare`, milestones, weekly "fastest", charts?        | Later               |
 
 Each phase is planned in detail in `todo.md` before it starts, and gets its own review.
@@ -88,23 +88,87 @@ Access patterns:
 - a user's characters → query `pk=CHARACTERS`, `sk begins_with <userId>#` (user IDs never contain `#`, so the prefix is
   exact even though names may)
 - all characters for the report → query `pk=CHARACTERS`. One partition is fine at a single guild's scale.
-- level at a point in time (report delta, later pace) → query `pk=RECORD#…`, `sk <= time`, newest first, limit 1
+- level at a point in time (report delta) → query `pk=RECORD#…`, `sk <= time`, newest first, limit 1
 - one character → get `pk=CHARACTERS`, `sk=<userId>#<nameLower>`
 - adding a character → put with `attribute_not_exists(pk)` (no level/updatedAt until the first record)
 - recording a level → one `TransactWrite`: put the Record + put the Character with the condition
   `attribute_not_exists(level) OR level <= :level` (covers a new character and an added one without a level)
 - removing a character → delete the Character, then query its `RECORD#…` keys and batch-delete them
 
+### Decisions from implementation
+
+- `Command.execute` returns a `CommandResponse`: Discord's callback data plus an optional `public` flag, which
+  `execute.ts` strips before sending.
+- A lower level is refused only by the DynamoDB condition (no pre-check), so the normal case and a race give the same
+  message.
+- Public replies set `allowed_mentions: { parse: [] }` because names are user input (e.g. `@everyone`); names are
+  markdown-escaped everywhere (`formatCharacterName` in `src/characterName.ts`).
+- Report: a character with no record older than 24h shows 🆕 and doesn't count as a level-up. Ties in level are sorted
+  by name. Rows that don't fit the 4096-char embed limit are cut from the end with "…and N more". The report lambda
+  has a 30s timeout and read-only table access.
+
 ## Phase 2: leveling pace
 
-- Pace = levels/day from the character's first record to its latest one, i.e. all time. Simple and understandable. Its
-  bias toward low-level characters is accepted (see Game facts).
-- Pace can't be computed for a character with a single record, or one whose records are less than ~1 day apart.
-  Show "—" until then.
-- Daily report: pace column, and a stale marker for characters with no update for N days.
-- `/progress [user] [character]`: history summary (first record, current level, levels gained), pace, and ETA to 60 at
-  that pace. The ETA is optimistic because late levels are slower.
-- Open questions: stale threshold (3 days?); does `/progress` reply publicly or ephemerally?
+### Pace
+
+- Pace = levels/day from the character's first record to its latest one (`updatedAt`), i.e. all time:
+  `(level - firstRecord.level) / days(updatedAt - firstRecord.recordedAt)`. Its bias toward low-level characters is
+  accepted (see Game facts).
+- Counted from the first record, not level 1: a character first recorded at 30 has gained 0 levels at that point.
+- A same-level `/level` refreshes `updatedAt` and so lowers the pace. That's intended: time passed without progress.
+- No pace (shown as "—") when the first and latest record are less than 1 day apart, which includes a single record.
+- Shown with one decimal: `1.5/day`.
+- The first record comes from a query (see access patterns), not from a field on the Character. Nothing to migrate,
+  and the level history stays the only source of truth.
+
+### Stale marker
+
+- A character is stale when its `updatedAt` is more than **3 days** ago and it is below level 60 (a max-level character
+  is done, not stale). Shown as 💤.
+
+### ETA to 60
+
+- `ceil((60 - level) / pace)` days from now, shown as `~N days (<t:…:D>)`. None when there's no pace or the pace is 0.
+- The ETA is optimistic because late levels are slower, and `/progress` says so in the embed footer.
+- At 60: "Max level 🎉" instead of an ETA. "Took N days" is left for phase 3's milestones: `updatedAt` can be
+  refreshed by a repeated `/level 60`, so it would need the first record at 60, not the latest.
+
+### Shared logic
+
+- `src/leveling.ts`: `MAX_LEVEL` (moved from `src/commands/level.ts`), `STALE_AFTER_DAYS`, and pure functions
+  `getPace`, `getEtaDays`, `isStale`, `formatPace`. Used by the report and `/progress`, so neither bundle pulls in the
+  other's code.
+
+### Daily report
+
+- Row: `name (@user) Lv N ▲k · 1.5/day · updated <t:…:R> 💤`. Without a pace the pace part is left out
+  (`Lv 12 — · — · updated` would be confusing next to the 24h change's `—`).
+- One extra query per character (first record) in parallel with the existing 24h query. At a single guild's scale the
+  30s timeout is plenty.
+- Sorting, the 🆕 marker, the "no level-ups" line and the embed-limit cut stay as they are.
+
+### `/progress [user] [character]`
+
+- `user` (User option): whose progress; default the caller.
+- `character` (string, autocomplete): one of that user's characters. Autocomplete suggests the characters of the user
+  in the `user` option if it's filled in, otherwise the caller's (autocomplete interactions carry the other options'
+  raw values, so the user ID is available). A name that doesn't match → ephemeral error.
+- `character` omitted: all of the user's characters (no 2+ error like `/level`, since showing several is useful here).
+  0 characters → ephemeral "@user has no characters yet".
+- Reply: **public** (the bot is social, and it matches `/level`), `allowed_mentions: { parse: [] }`. Errors are
+  ephemeral. One embed with the user mentioned in the description and one non-inline field per character (max 25
+  fields, a user has a few characters):
+  - `Level 42 · started at 12 on <t:…:D> · ▲30`
+  - `Pace 1.5/day · 60 in ~12 days (<t:…:D>)` (or `—` / "Max level 🎉")
+  - `Updated <t:…:R>` + 💤 when stale
+  - A character without a level: "No level recorded yet".
+- Footer: "ETA assumes a steady pace; late levels take longer."
+- Read-only, no buttons.
+
+### Data access (additions)
+
+- first record of a character → query `pk=RECORD#…`, oldest first (`ScanIndexForward: true`), limit 1
+  (`src/db/getFirstRecord.ts`, returns `{ level, recordedAt }` or undefined)
 
 ## Phase 3: comparison and fun
 

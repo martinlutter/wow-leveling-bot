@@ -21,9 +21,8 @@ import getCharacter from '../db/getCharacter';
 import getUserCharacters from '../db/getUserCharacters';
 import { type Character, hasLevel } from '../db/model/character';
 import recordLevel, { LevelDecreaseError } from '../db/recordLevel';
+import { MAX_LEVEL } from '../leveling';
 import { randomQuote } from '../quotes';
-
-export const MAX_LEVEL = 60;
 
 const builder = new SlashCommandBuilder()
   .setName('level')

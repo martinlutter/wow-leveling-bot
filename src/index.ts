@@ -25,6 +25,7 @@ import { InteractionType } from 'discord-api-types/v10';
 import { addCharacterCommand } from './commands/addCharacter';
 import { levelCommand } from './commands/level';
 import { pingCommand } from './commands/ping';
+import { progressCommand } from './commands/progress';
 import { removeCharacterCommand } from './commands/removeCharacter';
 
 /** `public: true` posts the result for everyone; otherwise only the caller sees it. */
@@ -62,6 +63,7 @@ export const commands: Command[] = [
   levelCommand,
   addCharacterCommand,
   removeCharacterCommand,
+  progressCommand,
 ];
 
 export const findCommand = (name: string) =>
