@@ -44,7 +44,8 @@
 
 ## Task Management
 
-1. **Plan First**: Write plan to `tasks/todo.md` with checkable items
+0. **Overall plan**: `tasks/plan.md` holds the product spec, decisions and all phases; keep it current
+1. **Plan First**: Write plan to `tasks/todo.md` with checkable items (current phase only)
 2. **Verify Plan**: Check in before starting implementation
 3. **Track Progress**: Mark items complete as you go
 4. **Explain Changes**: High-level summary at each step
@@ -65,9 +66,17 @@ Serverless Discord bot for recording World of Warcraft leveling progress: no gat
 
 1. `src/index.ts` (Interaction lambda, 3s timeout): verifies the Ed25519 signature, answers PING with PONG; for
    application commands it async-invokes the Execute lambda and replies `DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE` (ephemeral).
-   Discord drops the interaction if this takes >3s, so no real work here.
+   Discord drops the interaction if this takes >3s, so no real work here. The one exception is autocomplete, which
+   can't be deferred: `Command.autocomplete` runs here (e.g. a DynamoDB query; the lambda has read access to the table).
 2. `src/execute.ts` (Execute lambda, 10s timeout): finds the command, runs `execute`, sends the result with
    `discordApi.interactions.followUp`. A thrown error is logged and answered with a generic message.
+   A result with `public: true` is posted to the channel with `channels.createMessage` and the ephemeral deferred reply
+   is deleted (fallback without Send Messages: public follow-up). The Execute lambda has async retries off.
+3. Button clicks: custom_id `<command name>:…` routes to that command's `handleButton`; the Interaction lambda replies
+   `DEFERRED_UPDATE_MESSAGE` and Execute replaces the button's message with the result via `editReply`.
+
+`src/dailyReport.ts` (DailyReport lambda) runs at 07:00 Europe/Berlin via EventBridge Scheduler and posts to
+`REPORT_CHANNEL_ID`. Storage is one DynamoDB table (`src/db/`, access patterns in `tasks/plan.md`).
 
 ### Layout
 

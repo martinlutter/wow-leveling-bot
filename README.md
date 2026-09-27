@@ -12,8 +12,8 @@ There is no open websocket (gateway) connection: Discord sends every interaction
 Discord ──POST──▶ API Gateway ──▶ Interaction lambda (src/index.ts)
                                    │ 1. verify signature
                                    │ 2. PING → PONG
-                                   │ 3. command → async invoke Execute lambda,
-                                   │    reply "deferred" (bot is thinking…)
+                                   │ 3. command or button click → async invoke
+                                   │    Execute lambda, reply "deferred"
                                    ▼
                                   Execute lambda (src/execute.ts)
                                    │ run the command
@@ -24,15 +24,43 @@ Discord requires an answer within 3 seconds, so the Interaction lambda only vali
 The actual work happens in the Execute lambda, which has up to 15 minutes to send a follow-up
 (it has a 10 second timeout by default).
 
+A third lambda posts the daily report. EventBridge Scheduler triggers it every day at 07:00 Central European time.
+
+## Commands
+
+- `/add-character <name>`: add a character to record levels for. Names have 1 or 2 words (`Grom Hellscream`), are
+  case-insensitive, and keep the casing you typed. The character has no level until its first `/level`.
+- `/level <level> [character]`: record the level (1–60) your character reached. Posts publicly in the channel with the
+  change since the previous record and a random WoW quote. 🎉 on reaching 60.
+  - `character` must be one of your characters, and is needed once you have more than one. It autocompletes your
+    characters.
+  - Without `character` and with no characters yet, one is created named after you (server nickname, then display name,
+    then username).
+  - Levels can't go down. Recording the same level again refreshes "last updated".
+- `/remove-character <name>`: remove a character and its level history, after a Yes/No confirmation. `name`
+  autocompletes your characters.
+- `/ping`: check that the bot is alive.
+
+Everything except a successful `/level` (errors, confirmations) is only visible to you.
+
+### Daily report
+
+Every day at 07:00 Central European time (following daylight saving time), the bot posts to the `REPORT_CHANNEL_ID`
+channel. It lists every character by level with its change over the last 24 hours (▲ gained, — none, 🆕 no record older
+than 24 hours) and when it was last updated.
+
 ## Project structure
 
 ```
-app.config.ts              CDK stack: 2 lambdas + REST API
+app.config.ts              CDK stack: 3 lambdas, REST API, DynamoDB table, daily schedule
 scripts/deployCommands.ts  registers the commands with Discord
 src/index.ts               Interaction lambda + the list of commands
 src/execute.ts             Execute lambda
-src/clients/discordApi.ts  Discord REST client
-src/commands/ping.ts       example command
+src/dailyReport.ts         Daily report lambda
+src/clients/               Discord REST and DynamoDB clients
+src/commands/              one file per command
+src/db/                    data access (one function per access pattern) and models
+src/quotes.ts              WoW quotes for /level replies
 tests/                     jest tests, mirrors src/
 .claude/                   Claude Code settings and skills
 ```
@@ -73,6 +101,7 @@ DISCORD_TOKEN=           # Bot tab → token
 APPLICATION_PUBLIC_KEY=  # General Information → Public Key
 APPLICATION_CLIENT_ID=   # General Information → Application ID
 GUILD_ID=                # server ID from step 2.4
+REPORT_CHANNEL_ID=       # channel for the daily report: right-click it → Copy Channel ID (Developer Mode on)
 ```
 
 `.env` is read by `app.config.ts` at deploy time (the values become Lambda environment variables) and by
@@ -83,17 +112,19 @@ GUILD_ID=                # server ID from step 2.4
 Build an invite URL and open it in a browser:
 
 ```
-https://discord.com/oauth2/authorize?client_id=<APPLICATION_CLIENT_ID>&scope=bot+applications.commands&permissions=2048
+https://discord.com/oauth2/authorize?client_id=<APPLICATION_CLIENT_ID>&scope=bot+applications.commands&permissions=18432
 ```
 
 - `applications.commands` lets the app register slash commands in the server.
 - `bot` adds a bot user, which is needed for anything outside of replying to a command
   (posting to a channel on a schedule, reading messages, …).
-- `permissions` is a bitfield of what the bot user can do. `2048` is Send Messages. To choose others,
+- `permissions` is a bitfield of what the bot user can do. `18432` is Send Messages (2048) + Embed Links (16384). The
+  daily report needs them in the `REPORT_CHANNEL_ID` channel, and public `/level` replies need Send Messages in every
+  channel `/level` is used in. For a private channel, also give the bot's role access to it. To choose others,
   use **OAuth2 → URL Generator** in the portal: tick `bot` + `applications.commands`, tick the permissions,
   and copy the generated URL.
 
-Replying to commands works without any permissions: the replies go through the interaction token.
+Private replies to commands work without any permissions: they go through the interaction token.
 
 ### 5. Register the commands
 
@@ -139,7 +170,8 @@ fails, check that `APPLICATION_PUBLIC_KEY` is right and redeploy.
 
 ### 8. Try it
 
-Type `/ping` in your server. The bot should answer **Pong!** (visible only to you).
+Type `/ping` in your server. The bot should answer **Pong!** (visible only to you). Then `/level 1` should post a public
+reply.
 
 ## Development
 
@@ -161,9 +193,24 @@ With Claude Code, ask it to add the command; the `add-command` skill covers thes
 
 ### Replies
 
-The Interaction lambda defers with the `Ephemeral` flag, so the follow-up is only visible to the user who ran the command.
-Remove `flags: MessageFlags.Ephemeral` in `src/index.ts` to make replies public.
-If a command throws, `execute.ts` logs the error and sends a generic "Something went wrong" reply.
+The Interaction lambda defers with the `Ephemeral` flag, so by default the reply is only visible to the user who ran the
+command. A command can return `public: true` to post for everyone instead: `execute.ts` then posts the result to the
+channel as a plain message and deletes the ephemeral reply. So a command can answer errors privately and successes
+publicly. Posting needs Send Messages in the channel; without it, `execute.ts` logs the error and falls back to a public
+follow-up, which Discord shows as a reply to the deleted ephemeral message. If a command throws, `execute.ts` logs the
+error and sends a generic "Something went wrong" reply.
+
+### Buttons
+
+A command can add buttons to its reply and handle clicks with `handleButton`. A button's `custom_id` must start with
+`<command name>:`, which is how the Interaction lambda finds the command. The click is deferred, and `execute.ts` replaces
+the message holding the button with `handleButton`'s result. See `src/commands/removeCharacter.ts`.
+
+### Storage
+
+One DynamoDB table (single-table design, `pk`/`sk` keys). It's kept when the stack is deleted (`RemovalPolicy.RETAIN`).
+Characters live in one partition (`pk = CHARACTERS`), the level history in one partition per character
+(`pk = RECORD#<userId>#<lowercase name>`, `sk` = ISO timestamp).
 
 ### Logs
 

@@ -58,8 +58,16 @@ description: Add a Discord slash command, message context-menu command, or user 
 ## Gotchas
 
 - Slash command names: lowercase, 1–32 chars, no spaces. Context-menu names may have spaces and capitals.
-- The reply is a follow-up to an ephemeral deferred response, so only the caller sees it. To post publicly, use
-  `discordApi.channels.createMessage` (the bot user must be in the server with Send Messages).
+- The reply is a follow-up to an ephemeral deferred response, so only the caller sees it. To post publicly, return
+  `{ ...data, public: true }` (a `CommandResponse`); it's posted to the channel, which needs Send Messages there. Keep
+  error replies private by leaving it out. When the content contains user input, add `allowed_mentions: { parse: [] }`
+  so it can't ping anyone.
+- Buttons (e.g. a Yes/No confirmation): put them in `components` with a `custom_id` of `<command name>:…` (max 100
+  chars) and add `handleButton` to the `Command`; its result replaces the message, so pass `components: []` to remove
+  the buttons. See `src/commands/removeCharacter.ts`.
+- Autocomplete: `.setAutocomplete(true)` on the option and add `autocomplete` to the `Command`, returning up to 25
+  choices. It runs in the Interaction lambda (3s limit, can't be deferred), so keep it to one fast query; that lambda
+  has read-only table access. See `src/autocompleteCharacters.ts`.
 - For expected failures (bad input, nothing found) return `{ content: '...' }`. Throwing is for bugs: `execute.ts`
   catches it, logs it, and replies with a generic error.
 - `execute` runs in the Execute lambda (10s timeout, raise it in `app.config.ts` if needed). Don't do I/O at module top

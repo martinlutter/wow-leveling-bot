@@ -36,7 +36,9 @@
     "typescript-eslint": "^8.31.1"
   },
   "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1141.0",
     "@aws-sdk/client-lambda": "^3.799.0",
+    "@aws-sdk/lib-dynamodb": "^3.1141.0",
     "@discordjs/builders": "^1.11.0",
     "@discordjs/core": "^2.1.0",
     "@discordjs/rest": "^2.5.0",
